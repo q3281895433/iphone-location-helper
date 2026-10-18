@@ -268,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.documentView = log
         scroll.heightAnchor.constraint(equalToConstant: 76).isActive = true
-        let explanation = label("地图路线按起点 → 途经点 → 终点回放。模拟步数不会写入系统；结束后请点击“恢复真实定位”。", size: 12, color: .secondaryLabelColor)
+        let explanation = label("跑圈模式：拖动中心、长短轴与旋转把手调整场地。地图坐标与手机落点需核对；模拟步数不会写入系统。", size: 12, color: .secondaryLabelColor)
         explanation.maximumNumberOfLines = 3; explanation.preferredMaxLayoutWidth = 570
         let right = column([label("地点搜索与路线选点", size: 15, weight: .semibold), searchRow, placeResults, mapCanvas, progressBar, metrics, explanation, label("运行记录", size: 13, weight: .medium), scroll])
         for v in [searchRow, placeResults, mapCanvas, progressBar, scroll] { v.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true }
@@ -567,6 +567,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
     func updatePreview() {
         if !routeActive { setRouteControls(true) }
         startButton.title = routeMode.selectedSegment == 0 ? "开始路线" : "开始跑圈"
+        if routeMode.selectedSegment == 1 { routeSummary.stringValue = "拖动地图把手，调整跑道大小、方向与中心。" }
+        else if routePoints.count < 2 { routeSummary.stringValue = "请在地图选择起点与终点。" }
         if progressBar.doubleValue == 0 { lapMetric.stringValue = routeMode.selectedSegment == 0 ? "0%" : "0.00 圈" }
         mapCanvas.call("update", ["mode": routeMode.selectedSegment == 0 ? "polyline" : "stadium"])
         guard let length = Double(lapLength.stringValue), let r = Double(radius.stringValue), let turn = Double(rotation.stringValue), length.isFinite, r.isFinite, turn.isFinite, length >= 50, r > 0, 2 * .pi * r < length else { return }
@@ -594,12 +596,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
                             self.placeResults.removeAllItems(); self.placeResults.addItem(withTitle: "选择结果")
                             for p in places { self.placeResults.addItem(withTitle: p.name) }
                             self.placeResults.selectItem(at: 1); self.selectPlace()
-                            self.mapCanvas.evaluateJavaScript("window.locationMap.searchCheck()") { value, error in
-                                summary["map"] = value ?? NSNull()
-                                if let error = error { summary["mapError"] = error.localizedDescription }
-                                if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]) { try? data.write(to: URL(fileURLWithPath: report)) }
-                                self.isQuitting = true; NSApp.terminate(nil)
-                            }
+                            summary["map"] = self.mapCanvas.searchCheck()
+                            if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted]) { try? data.write(to: URL(fileURLWithPath: report)) }
+                            self.isQuitting = true; NSApp.terminate(nil)
                             return
                         }
                     case .failure(let error): summary["error"] = error.localizedDescription
@@ -611,14 +610,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
             if let index = CommandLine.arguments.firstIndex(of: "--map-check"), CommandLine.arguments.count > index + 1 {
                 let report = CommandLine.arguments[index + 1]
                 DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                    self.mapCanvas.evaluateJavaScript("window.locationMap.check()") { result, error in
-                        var data = result as? [String: Any] ?? [:]
-                        if let error = error { data["error"] = error.localizedDescription }
-                        if let json = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) { try? json.write(to: URL(fileURLWithPath: report)) }
-                        self.mapCanvas.takeSnapshot(with: nil) { image, _ in
-                            if let image = image, let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: report + ".png")) }
-                            self.isQuitting = true; NSApp.terminate(nil)
+                    var data = self.mapCanvas.runChecks()
+                    self.routeMode.selectedSegment = 1
+                    if let geometry = data["track"] as? [String: Any] { self.handleMap(["type": "track", "track": geometry]) }
+                    if let geometry = data["track"] as? [String: Any], let expected = TrackGeometry(dictionary: geometry) {
+                        data["formSync"] = abs((Double(self.radius.stringValue) ?? -1)-expected.radius) < 0.01 && abs((Double(self.rotation.stringValue) ?? -1)-expected.rotation) < 0.01 && abs((Double(self.lapLength.stringValue) ?? -1)-expected.lapLength) < 0.01
+                        data["allPassed"] = (data["allPassed"] as? Bool ?? false) && (data["formSync"] as? Bool ?? false)
+                    }
+                    if let json = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) { try? json.write(to: URL(fileURLWithPath: report)) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        if let png = self.mapCanvas.snapshotPNG() { try? png.write(to: URL(fileURLWithPath: report + ".png")) }
+                        if let content = self.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                            content.cacheDisplay(in: content.bounds, to: bitmap)
+                            if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: report + ".window.png")) }
                         }
+                        self.isQuitting = true; NSApp.terminate(nil)
                     }
                 }
             }
@@ -630,6 +636,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         case "coordinate":
             guard !routeActive, let point = item["point"] as? [Double], point.count == 2 else { return }
             latitude.stringValue = String(format: "%.7f", point[0]); longitude.stringValue = String(format: "%.7f", point[1]); updatePreview()
+        case "track":
+            guard !routeActive, let values = item["track"] as? [String: Any], let geometry = TrackGeometry(dictionary: values) else { return }
+            latitude.stringValue = String(format: "%.7f", geometry.latitude)
+            longitude.stringValue = String(format: "%.7f", geometry.longitude)
+            lapLength.stringValue = String(format: "%.6f", geometry.lapLength)
+            radius.stringValue = String(format: "%.6f", geometry.radius)
+            rotation.stringValue = String(format: "%.2f", geometry.rotation)
+            updatePreview()
         default: break
         }
     }
