@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'none';">
+<link rel="stylesheet" href="vendor/dist/leaflet.css"><link rel="stylesheet" href="map.css">
+<title>定位助手地图</title></head><body>
+<div id="map" aria-label="路线选点地图"></div>
+<div class="toolbar" role="group" aria-label="地图选点操作">
+  <button data-pick="start" class="selected">选起点</button>
+  <button data-pick="waypoint">加途经点</button>
+  <button data-pick="end">选终点</button>
+  <button data-pick="center">固定点 / 跑道中心</button>
+  <span class="divider"></span><button id="undo">撤销</button><button id="clear">清空</button><button id="fit">查看全线</button>
+</div>
+<div class="help"><strong id="hint">请点击地图选择起点</strong><span id="summary">先选起点，再选终点；沿道路补充途经点。</span><span id="network">正在加载 OpenStreetMap 底图…</span></div>
+<script src="vendor/dist/leaflet.js"></script><script src="map.js"></script>
+</body></html>

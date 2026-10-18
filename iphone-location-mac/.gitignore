@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pip-cache/
+install*.log
+device-setup*.log
+build.log
+window-check.log
+window-preview.png
+map-check.json*
+search-check.json
