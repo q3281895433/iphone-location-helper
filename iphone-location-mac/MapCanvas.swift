@@ -78,6 +78,8 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
     private let editor = MapEditorOverlay()
     private let picker = NSSegmentedControl(labels: ["选起点", "选终点", "加途经点", "固定点 / 中心"], trackingMode: .selectOne, target: nil, action: nil)
     private let imagery = NSSegmentedControl(labels: ["卫星", "卫星 + 标注"], trackingMode: .selectOne, target: nil, action: nil)
+    private let coordinatePicker = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var coordinateMode: MapCoordinateMode = .mainlandGCJ02
     private let hint = NSTextField(labelWithString: "Apple 卫星地图 · 选择跑道中心后可拖动把手调整")
     private var editButtons: [NSButton] = []
     private var mode = "polyline"
@@ -98,12 +100,18 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
         click.delegate = self; map.addGestureRecognizer(click)
         picker.selectedSegment = 0; picker.target = self; picker.action = #selector(pickChanged)
         imagery.selectedSegment = 0; imagery.target = self; imagery.action = #selector(imageryChanged)
+        coordinatePicker.addItems(withTitles: ["大陆底图校正 · GCJ-02", "原始底图坐标 · WGS84"])
+        coordinateMode = MapCoordinateMode(rawValue: UserDefaults.standard.integer(forKey: "mapCoordinateMode")) ?? .mainlandGCJ02
+        coordinatePicker.selectItem(at: coordinateMode.rawValue)
+        coordinatePicker.target = self; coordinatePicker.action = #selector(coordinateModeChanged)
+        coordinatePicker.toolTip = "大陆高德底图选 GCJ-02 校正；底图采用 WGS84 时选原始坐标。仅改变地图显示与选点转换，发送给手机的坐标始终为 WGS84。切换后请重新核对并选点。"
+        coordinatePicker.widthAnchor.constraint(equalToConstant: 198).isActive = true
         let fit = NSButton(title: "适应路线", target: self, action: #selector(fitRoute))
         let undo = NSButton(title: "撤销", target: self, action: #selector(undoPoint))
         let clear = NSButton(title: "清空", target: self, action: #selector(clearPoints))
         editButtons = [undo, clear]
         let first = NSStackView(views: [picker, fit, undo, clear]); first.spacing = 6
-        let second = NSStackView(views: [imagery, hint]); second.spacing = 10
+        let second = NSStackView(views: [imagery, coordinatePicker, hint]); second.spacing = 8
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for view in [first, second, map] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
@@ -130,7 +138,7 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
             for index in 0...2 { picker.setEnabled(mode != "stadium", forSegment: index) }
             if mode == "stadium" { picker.selectedSegment = 3 }
             redraw()
-        case "lock": locked = argument as? Bool ?? false; picker.isEnabled = !locked; editButtons.forEach { $0.isEnabled = !locked }; redraw()
+        case "lock": locked = argument as? Bool ?? false; picker.isEnabled = !locked; coordinatePicker.isEnabled = !locked; editButtons.forEach { $0.isEnabled = !locked }; redraw()
         case "position": currentPosition = coordinate(argument); editor.needsDisplay = true
         case "clearPosition": currentPosition = nil; editor.needsDisplay = true
         case "center": if let point = coordinate(argument) { focus(point) }
@@ -142,15 +150,26 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
         guard let p = value as? [Double], p.count == 2, p.allSatisfy({ $0.isFinite }), abs(p[0]) <= 85, abs(p[1]) <= 180 else { return nil }
         return CLLocationCoordinate2D(latitude: p[0], longitude: p[1])
     }
-    private func focus(_ point: CLLocationCoordinate2D) { map.setRegion(MKCoordinateRegion(center: point, latitudinalMeters: 1100, longitudinalMeters: 1100), animated: false) }
-    fileprivate func screen(_ coordinate: CLLocationCoordinate2D) -> NSPoint { map.convert(coordinate, toPointTo: editor) }
+    private func mapCoordinate(_ gps: CLLocationCoordinate2D) -> CLLocationCoordinate2D { CoordinateTransform.toMap(gps, mode: coordinateMode) }
+    private func gpsCoordinate(_ display: CLLocationCoordinate2D) -> CLLocationCoordinate2D { CoordinateTransform.toGPS(display, mode: coordinateMode) }
+    private func focus(_ point: CLLocationCoordinate2D) { map.setRegion(MKCoordinateRegion(center: mapCoordinate(point), latitudinalMeters: 1100, longitudinalMeters: 1100), animated: false) }
+    fileprivate func screen(_ coordinate: CLLocationCoordinate2D) -> NSPoint { map.convert(mapCoordinate(coordinate), toPointTo: editor) }
     private var routePoints: [CLLocationCoordinate2D] { guard let start = start, let end = end else { return [] }; return [start] + waypoints + [end] }
     @objc private func pickChanged() { hint.stringValue = mode == "stadium" ? "点击场地中心 · 拖动中心 / 长轴 / 短轴 / 旋转把手" : "点击地图选点 · 拖动标记可微调位置" }
     @objc private func imageryChanged() { map.preferredConfiguration = imagery.selectedSegment == 0 ? MKImageryMapConfiguration(elevationStyle: .flat) : MKHybridMapConfiguration(elevationStyle: .flat) }
+    @objc private func coordinateModeChanged() {
+        guard !locked else { coordinatePicker.selectItem(at: coordinateMode.rawValue); return }
+        coordinateMode = MapCoordinateMode(rawValue: coordinatePicker.indexOfSelectedItem) ?? .mainlandGCJ02
+        UserDefaults.standard.set(coordinateMode.rawValue, forKey: "mapCoordinateMode")
+        // Existing GPS coordinates stay unchanged. Only reproject them for the selected map.
+        redraw()
+        onMessage?(["type": "mapCoordinateMode", "mode": coordinateMode.rawValue])
+    }
+    private func selectMapCoordinate(_ point: CLLocationCoordinate2D) { select(gpsCoordinate(point)) }
     @objc private func mapClicked(_ gesture: NSClickGestureRecognizer) {
         guard !locked else { return }
         let point = map.convert(gesture.location(in: map), toCoordinateFrom: map)
-        guard CLLocationCoordinate2DIsValid(point), abs(point.latitude) <= 85 else { return }; select(point)
+        guard CLLocationCoordinate2DIsValid(point), abs(point.latitude) <= 85 else { return }; selectMapCoordinate(point)
     }
     private func select(_ point: CLLocationCoordinate2D) {
         guard !locked else { return }
@@ -170,7 +189,7 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
     }
     @objc private func clearPoints() { guard !locked else { return }; start = nil; end = nil; waypoints = []; emitRoute(); redraw() }
     @objc private func fitRoute() {
-        let points = mode == "stadium" ? (track?.points() ?? []) : routePoints
+        let points = (mode == "stadium" ? (track?.points() ?? []) : routePoints).map(mapCoordinate)
         guard let first = points.first else { if let point = searchPosition ?? center { focus(point) }; return }
         var rect = MKMapRect(origin: MKMapPoint(first), size: MKMapSize(width: 1, height: 1))
         for point in points.dropFirst() { rect = rect.union(MKMapRect(origin: MKMapPoint(point), size: MKMapSize(width: 1, height: 1))) }
@@ -191,7 +210,7 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
     }
     fileprivate func dragHandle(_ id: String, to point: NSPoint, initial: TrackGeometry?) {
         guard !locked else { return }
-        let coordinate = map.convert(point, toCoordinateFrom: editor)
+        let coordinate = gpsCoordinate(map.convert(point, toCoordinateFrom: editor))
         guard CLLocationCoordinate2DIsValid(coordinate), abs(coordinate.latitude) <= 85 else { return }
         if mode == "stadium", var geometry = initial ?? track {
             switch id {
@@ -220,22 +239,41 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
     private func redraw() {
         editButtons.forEach { $0.isEnabled = !locked && mode != "stadium" }
         if let overlay = routeOverlay { map.removeOverlay(overlay) }
-        let points = mode == "stadium" ? (track?.points() ?? []) : routePoints
+        let points = (mode == "stadium" ? (track?.points() ?? []) : routePoints).map(mapCoordinate)
         if points.count > 1 { let line = MKPolyline(coordinates: points, count: points.count); routeOverlay = line; map.addOverlay(line) } else { routeOverlay = nil }
-        hint.stringValue = locked ? "位置模拟进行中 · 地图编辑已锁定" : mode == "stadium" ? "拖动紫色中心移动 · 橙色调大小 · 青色调方向" : "Apple 卫星地图 · 点击选点，拖动标记微调"; editor.needsDisplay = true
+        let datum = coordinateMode == .mainlandGCJ02 ? "GCJ-02 → WGS84" : "WGS84 原始坐标"
+        hint.stringValue = locked ? "编辑已锁定 · \(datum)" : datum
+        editor.needsDisplay = true
     }
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer { let renderer = MKPolylineRenderer(overlay: overlay); renderer.strokeColor = mode == "stadium" ? .systemPurple : .systemBlue; renderer.lineWidth = 4; return renderer }
     func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) { editor.needsDisplay = true }
     func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) { editor.needsDisplay = true }
     func mapViewDidFailLoadingMap(_ mapView: MKMapView, withError error: Error) { hint.stringValue = "Apple 地图加载失败，请检查网络后重试" }
     func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: NSGestureRecognizer) -> Bool { true }
-    func searchCheck() -> [String: Any] { ["point": searchPosition.map { [$0.latitude, $0.longitude] } ?? [], "provider": "Apple MapKit", "satellite": imagery.selectedSegment == 0] }
+    func searchCheck() -> [String: Any] { ["point": searchPosition.map { [$0.latitude, $0.longitude] } ?? [], "provider": "Apple MapKit", "satellite": imagery.selectedSegment == 0, "mapCoordinateMode": coordinateMode.rawValue, "deviceCoordinateSystem": "WGS84"] }
     /// Integration checks follow real selection/drag paths without a device backend.
     func runChecks() -> [String: Any] {
         let callback = onMessage; onMessage = nil
         defer { onMessage = callback }
         var results: [String: Bool] = [:]
         let a = CLLocationCoordinate2D(latitude: 39.99, longitude: 116.39), b = CLLocationCoordinate2D(latitude: 39.991, longitude: 116.393)
+        coordinateMode = .mainlandGCJ02; coordinatePicker.selectItem(at: coordinateMode.rawValue)
+        var selectedGPS: CLLocationCoordinate2D?
+        onMessage = { message in
+            if message["type"] as? String == "coordinate", let point = message["point"] as? [Double], point.count == 2 {
+                selectedGPS = CLLocationCoordinate2D(latitude: point[0], longitude: point[1])
+            }
+        }
+        picker.selectedSegment = 0; selectMapCoordinate(mapCoordinate(a))
+        results["mapSelectionEmitsWGS84"] = selectedGPS.map { abs($0.latitude-a.latitude)<1e-7 && abs($0.longitude-a.longitude)<1e-7 } ?? false
+        onMessage = nil
+        call("searchResult", ["point": [a.latitude, a.longitude]])
+        results["searchInputRemainsWGS84"] = searchPosition?.latitude == a.latitude && searchPosition?.longitude == a.longitude
+        let display = map.convert(screen(a), toCoordinateFrom: editor), expectedDisplay = mapCoordinate(a)
+        results["displayConvertedExactlyOnce"] = abs(display.latitude-expectedDisplay.latitude)<1e-7 && abs(display.longitude-expectedDisplay.longitude)<1e-7
+        call("position", [a.latitude, a.longitude])
+        results["devicePositionRemainsWGS84"] = currentPosition?.latitude == a.latitude && currentPosition?.longitude == a.longitude
+        call("position", NSNull()); results["restoredPositionCleared"] = currentPosition == nil
         mode = "polyline"; locked = false; picker.selectedSegment = 0; select(a); picker.selectedSegment = 1; select(b); results["startEnd"] = routePoints.count == 2
         picker.selectedSegment = 2; select(CLLocationCoordinate2D(latitude: 39.992, longitude: 116.391)); results["waypoint"] = routePoints.count == 3
         undoPoint(); results["undo"] = routePoints.count == 2
@@ -255,7 +293,8 @@ final class MapCanvas: NSView, MKMapViewDelegate, NSGestureRecognizerDelegate {
         }
         redraw(); fitRoute()
         let geometryChecks = TrackGeometryCheck.run()
-        return ["checks": results, "geometryChecks": geometryChecks, "allPassed": results.count == 12 && results.values.allSatisfy { $0 } && geometryChecks.values.allSatisfy { $0 }, "mapProvider": "Apple MapKit satellite", "track": track?.dictionary ?? [:]]
+        let coordinateChecks = CoordinateTransformCheck.run()
+        return ["checks": results, "geometryChecks": geometryChecks, "coordinateChecks": coordinateChecks, "allPassed": results.count == 17 && results.values.allSatisfy { $0 } && geometryChecks.values.allSatisfy { $0 } && !coordinateChecks.isEmpty && coordinateChecks.values.allSatisfy { $0 }, "mapProvider": "Apple MapKit satellite", "mapCoordinateMode": coordinateMode.rawValue, "deviceCoordinateSystem": "WGS84", "track": track?.dictionary ?? [:]]
     }
     func snapshotPNG() -> Data? {
         guard let bitmap = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }

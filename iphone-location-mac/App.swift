@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         let coordinates = fields([("纬度", latitude), ("经度", longitude)])
         latitude.placeholderString = "搜索地点或在地图选点"
         longitude.placeholderString = "WGS84 经度"
-        let reference = label("搜索地点，或在地图选择固定点 / 跑道中心。", size: 11, color: .secondaryLabelColor)
+        let reference = label("手机接收 WGS84。大陆底图请启用 GCJ-02 校正；先核对固定点，再启动跑圈。", size: 11, color: .secondaryLabelColor)
         reference.maximumNumberOfLines = 2
         reference.preferredMaxLayoutWidth = 320
         let fixed = cardPanel("目标位置 · WGS84", [coordinates, reference,
@@ -268,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.documentView = log
         scroll.heightAnchor.constraint(equalToConstant: 76).isActive = true
-        let explanation = label("跑圈模式：拖动中心、长短轴与旋转把手调整场地。地图坐标与手机落点需核对；模拟步数不会写入系统。", size: 12, color: .secondaryLabelColor)
+        let explanation = label("先设置固定点，在 iPhone 自带地图核对操场，再开始跑圈。桌面蓝点为已发送位置，不能验证手机实际落点。", size: 12, color: .secondaryLabelColor)
         explanation.maximumNumberOfLines = 3; explanation.preferredMaxLayoutWidth = 570
         let right = column([label("地点搜索与路线选点", size: 15, weight: .semibold), searchRow, placeResults, mapCanvas, progressBar, metrics, explanation, label("运行记录", size: 13, weight: .medium), scroll])
         for v in [searchRow, placeResults, mapCanvas, progressBar, scroll] { v.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true }
@@ -616,6 +616,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
                     if let geometry = data["track"] as? [String: Any], let expected = TrackGeometry(dictionary: geometry) {
                         data["formSync"] = abs((Double(self.radius.stringValue) ?? -1)-expected.radius) < 0.01 && abs((Double(self.rotation.stringValue) ?? -1)-expected.rotation) < 0.01 && abs((Double(self.lapLength.stringValue) ?? -1)-expected.lapLength) < 0.01
                         data["allPassed"] = (data["allPassed"] as? Bool ?? false) && (data["formSync"] as? Bool ?? false)
+                        let deviceConfig = try? self.config()
+                        data["deviceConfigWGS84"] = abs((deviceConfig?["latitude"] as? Double ?? -1)-39.9905)<1e-7 && abs((deviceConfig?["longitude"] as? Double ?? -1)-116.3905)<1e-7
+                        data["allPassed"] = (data["allPassed"] as? Bool ?? false) && (data["deviceConfigWGS84"] as? Bool ?? false)
                     }
                     if let json = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) { try? json.write(to: URL(fileURLWithPath: report)) }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -644,6 +647,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
             radius.stringValue = String(format: "%.6f", geometry.radius)
             rotation.stringValue = String(format: "%.2f", geometry.rotation)
             updatePreview()
+        case "mapCoordinateMode":
+            appendLog("地图坐标模式已切换，已选 GPS 坐标保持不变。请重新核对地图选点，并先用固定定位在手机自带地图确认。")
         default: break
         }
     }

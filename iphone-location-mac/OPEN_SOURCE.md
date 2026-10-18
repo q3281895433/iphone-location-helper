@@ -1,4 +1,4 @@
-# 定位助手 0.5 · 上游来源与本地修改
+# 定位助手 0.5.1 · 上游来源与本地修改
 
 本项目在 macOS AppKit 窗口中使用系统 MapKit 与开源设备库；不属于下列项目的官方发行版。
 
@@ -6,7 +6,15 @@
 
 - 0.5 运行地图使用系统原生 [MKMapView](https://developer.apple.com/documentation/mapkit/mkmapview)，支持 [MKImageryMapConfiguration 卫星影像](https://developer.apple.com/documentation/mapkit/mkimagerymapconfiguration)与 [MKHybridMapConfiguration 混合地图](https://developer.apple.com/documentation/mapkit/mkhybridmapconfiguration)。不复制 Apple 地图库或影像数据；保留系统地图的来源署名。
 - 本地 `MapCanvas.swift` 实现起终点、途经点、路线显示和跑道编辑。紫色手柄移动中心，两个橙色手柄调整长轴与短轴，青色手柄调整朝向；与周长、半径、旋转角输入双向同步，运行时锁定编辑。旋转角 0° 为长轴朝北，90° 为长轴朝东。
-- 后端和坐标输入使用 WGS84。Apple 的 [CLLocationCoordinate2D 定义](https://developer.apple.com/documentation/corelocation/cllocationcoordinate2d)采用 WGS84；中国区域底图与手机实际落点仍需核对，不能据此声称完成跨区域或真机兼容验证。
+- 后端、手工坐标输入、Nominatim 搜索结果与路线配置始终使用 WGS84。Apple 的 [CLLocationCoordinate2D 定义](https://developer.apple.com/documentation/corelocation/cllocationcoordinate2d)采用 WGS84；[高德坐标说明](https://developer.amap.com/api/javascript-api-v2/guide/transform/convertfrom)说明其地图使用 GCJ-02。仅凭类型名称不能替代当前底图与真机落点核对。
+
+## 0.5.1 坐标适配修改
+
+- 新增显式手动选项“大陆底图校正 GCJ02”（默认）和“原始 WGS84”，不声称自动检测 MapKit 当前数据源、用户所在地区或国界。
+- 校正模式下，地图点击和拖动在进入应用数据前转换为 WGS84；绘制路线、搜索标记、发送位置回显与适应路线时，再转换到地图坐标。原始模式不做这些坐标转换。固定定位和路线后台只接收 WGS84。
+- 切换模式保留已选 GPS 坐标，只重新投影；不会自动更正先前的错误选点。应用不保存旧路线，升级后需重新选操场；先用固定定位在 iPhone 自带“地图”中核对，再开始跑圈。
+- GCJ-02 转换采用本地实现的公开近似模型，不是 Apple 或高德提供的坐标精度承诺。经纬度包围框只是粗略适用范围，不能准确排除港澳台及邻国；国外与非大陆底图应使用“原始 WGS84”。
+- 内部数值往返回归小于 0.1 米，只证明近似模型的正反计算相容，不证明真实地图、手机 GPS 或第三方应用的精度。桌面蓝点是已发送值，不是手机实际位置读回；本版不能声称已经消除用户报告的真机偏移。
 
 ## Leaflet 1.9.4（0.4 历史集成）
 
@@ -33,4 +41,4 @@
 
 在此文件夹运行 `.venv/bin/python3 -B -m unittest test_route_geometry test_backend`。这些测试使用模拟对象，不要求连接手机。
 
-地图编辑应通过原生窗口检查，几何测试不能替代手柄交互与手机实际落点核验。0.5 的完整真机路线回放仍待验证。
+地图编辑应通过原生窗口检查，几何与坐标转换测试不能替代手柄交互及手机实际落点核验。0.5.1 的完整真机路线回放仍待验证。
